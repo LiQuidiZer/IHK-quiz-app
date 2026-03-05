@@ -1,9 +1,3 @@
-/**
- * KI-Quiz – Application Logic
- * 
- * CORE RULE: Evaluation ONLY fires on explicit "Antwort überprüfen" click.
- * The user can freely check/uncheck any number of checkboxes before that.
- */
 (function () {
     'use strict';
 
@@ -13,15 +7,13 @@
     let score = 0;
     let wrongScore = 0;
     let incorrectAnswers = [];
-    let skippedQuestions = [];
-    let isEvaluated = false;
     let selectedCategory = null;    // null = all categories
     let timerInterval = null;
     let timeRemaining = 1200; // 20 minutes in seconds
-    let questionTimerInterval = null;
-    let questionTimeRemaining = 0;
     let originalTotalQuestions = 0;
     let quizCompletionTime = null;
+    let startTime = null;
+    const BATCH_SIZE = 5;
 
     // ── DOM References ─────────────────────────────────────
     const $ = (sel) => document.querySelector(sel);
@@ -31,20 +23,14 @@
     const progressInfo = $('#progress-info');
     const progressText = $('#progress-text');
     const progressFill = $('#progress-bar-fill');
-    const questionBadge = $('#question-badge');
-    const questionHint = $('#question-hint');
-    const questionText = $('#question-text');
-    const questionCategoryBadge = $('#question-category-badge');
-    const optionsList = $('#options-list');
+    const questionBatchContainer = $('#question-batch-container');
+    const questionBlockTemplate = $('#question-block-template');
     const optionTemplate = $('#option-template');
-    const rationaleBox = $('#rationale-box');
-    const rationaleText = $('#rationale-text');
     const btnCheck = $('#btn-check');
     const btnStart = $('#btn-start');
     const btnRestart = $('#btn-restart');
     const btnBackHome = $('#btn-back-home');
     const btnRetryIncorrect = $('#btn-retry-incorrect');
-    const btnSkip = $('#btn-skip');
     const btnExportPdf = $('#btn-export-pdf');
     const categoryChips = $('#category-chips');
     const statQuestions = $('#stat-questions');
@@ -69,6 +55,19 @@
     const wrongAnswersSummary = $('#wrong-answers-summary');
     const wrongAnswersList = $('#wrong-answers-list');
     const resultCompletionTime = $('#result-completion-time');
+    
+    // New Stats Elements
+    const resStatCorrect = $('#res-stat-correct');
+    const resStatWrong = $('#res-stat-wrong');
+    const resStatPercent = $('#res-stat-percent');
+    const resStatTime = $('#res-stat-time');
+    const categoryBreakdownContainer = $('#category-breakdown-container');
+    const categoryBreakdownList = $('#category-breakdown-list');
+
+    // History Elements
+    const historySection = $('#history-section');
+    const historyList = $('#history-list');
+    const btnClearHistory = $('#btn-clear-history');
 
     // Timer & Modal
     const timerDisplay = $('#timer-display');
@@ -77,8 +76,6 @@
     const avgTimeText = $('#avg-time-text');
     const modalTimeup = $('#modal-timeup');
     const btnTimeupResult = $('#btn-timeup-result');
-    const questionTimerDisplay = $('#question-timer-display');
-    const questionTimerText = $('#question-timer-text');
 
     // ── Extract unique categories from data ────────────────
     function getCategories() {
@@ -190,13 +187,8 @@
     function updateAvgTime() {
         if (!avgTimeDisplay || !avgTimeText) return;
 
-        // The number of questions for which time is still running.
-        // If the current question is not answered, it's part of the remaining questions.
-        // If it is answered, it's not.
-        const questionsLeft = isEvaluated
-            ? activeQuestions.length - (currentQuestionIndex + 1)
-            : activeQuestions.length - currentQuestionIndex;
-
+        // Number of questions not yet processed (correctly or incorrectly)
+        const questionsLeft = originalTotalQuestions - (score + wrongScore);
         if (timeRemaining <= 0 || questionsLeft <= 0) {
             avgTimeText.textContent = '--:-- / Frage';
             avgTimeDisplay.style.opacity = '0.5';
@@ -219,7 +211,7 @@
             timeRemaining--;
             if (timeRemaining <= 0) {
                 timeRemaining = 0;
-                stopTimer(); // Stops both main and question timer
+                stopTimer();
                 handleTimeUp(); // Then shows modal
             }
             timerText.textContent = formatTime(timeRemaining);
@@ -232,57 +224,14 @@
         }, 1000);
     }
 
-    // ── Question Timer Logic ───────────────────────────────
-    function stopQuestionTimer() {
-        clearInterval(questionTimerInterval);
-        if (questionTimerDisplay) questionTimerDisplay.classList.add('hidden');
-    }
-
-    function startQuestionTimer() {
-        stopQuestionTimer();
-        if (!questionTimerDisplay) return;
-
-        // Calculate the average time available for the remaining questions.
-        const questionsLeft = activeQuestions.length - currentQuestionIndex;
-        if (timeRemaining <= 0 || questionsLeft <= 0) {
-            stopQuestionTimer(); // No time or no questions left, hide the timer.
-            return;
-        }
-
-        questionTimerDisplay.classList.remove('hidden');
-        questionTimeRemaining = Math.floor(timeRemaining / questionsLeft);
-
-        // Update display immediately
-        questionTimerDisplay.classList.remove('warning');
-        questionTimerText.textContent = formatTime(questionTimeRemaining);
-
-        questionTimerInterval = setInterval(() => {
-            questionTimeRemaining--;
-
-            if (questionTimeRemaining <= 5 && questionTimeRemaining >= 0) {
-                questionTimerDisplay.classList.add('warning');
-            }
-
-            if (questionTimeRemaining < 0) {
-                // Time for this question is up. Automatically skip.
-                // The skipQuestion function will trigger a re-render, which will stop this timer.
-                skipQuestion();
-                return; // Stop this execution path.
-            }
-
-            questionTimerText.textContent = formatTime(questionTimeRemaining);
-        }, 1000);
-    }
-
     function stopTimer() {
         clearInterval(timerInterval);
-        stopQuestionTimer();
     }
 
     function handleTimeUp() {
-        // Evaluate current question if not yet evaluated
-        if (!isEvaluated && optionsList.querySelectorAll('.option-item.selected').length > 0) {
-            evaluateAnswer();
+        // Evaluate the current batch if any answers are selected, then show modal
+        if (questionBatchContainer.querySelector('.option-item.selected')) {
+            evaluateCurrentBatch();
         }
         modalTimeup.classList.remove('hidden');
     }
@@ -297,256 +246,131 @@
         screen.classList.add('active');
     }
 
-    // ── Render Question ────────────────────────────────────
-    function renderQuestion() {
-        isEvaluated = false;
-        const q = activeQuestions[currentQuestionIndex];
+    // ── Render Question Batch ──────────────────────────────
+    function renderQuestionBatch() {
+        questionBatchContainer.innerHTML = ''; // Clear previous batch
+
+        const batchEndIndex = Math.min(currentQuestionIndex + BATCH_SIZE, activeQuestions.length);
 
         // Update progress
-        const processedCount = score + wrongScore;
-        progressText.textContent = `Frage ${processedCount + 1} / ${originalTotalQuestions}`;
-        progressFill.style.width = `${(processedCount / originalTotalQuestions) * 100}%`;
-
-        // Update average time display
+        const startNum = currentQuestionIndex + 1;
+        const endNum = batchEndIndex;
+        progressText.textContent = `Fragen ${startNum}-${endNum} / ${originalTotalQuestions}`;
+        progressFill.style.width = `${(currentQuestionIndex / originalTotalQuestions) * 100}%`;
         updateAvgTime();
 
-        // Badge
-        questionBadge.textContent = `Frage ${currentQuestionIndex + 1}`;
+        for (let i = currentQuestionIndex; i < batchEndIndex; i++) {
+            const q = activeQuestions[i];
+            const questionIndexInQuiz = i;
 
-        // Category badge
-        const shortCat = q.category.replace(/^\d+\s*/, '');
-        questionCategoryBadge.textContent = shortCat;
+            const block = questionBlockTemplate.content.cloneNode(true).firstElementChild;
+            block.dataset.questionId = q.id;
 
-        // Hint for multi-select
-        const multipleCorrect = q.correctAnswers.length > 1;
-        questionHint.textContent = multipleCorrect
-            ? `${q.correctAnswers.length} richtige Antworten`
-            : '1 richtige Antwort';
+            // Populate block
+            block.querySelector('.question-badge').textContent = `Frage ${questionIndexInQuiz + 1}`;
+            const shortCat = q.category.replace(/^\d+\s*/, '');
+            block.querySelector('.question-category-badge').textContent = shortCat;
+            const multipleCorrect = q.correctAnswers.length > 1;
+            block.querySelector('.question-hint').textContent = multipleCorrect
+                ? `${q.correctAnswers.length} richtige Antworten`
+                : '1 richtige Antwort';
+            block.querySelector('.question-text').textContent = q.question;
 
-        // Question text
-        questionText.textContent = q.question;
+            const blockOptionsList = block.querySelector('.options-list');
 
-        // Build options
-        optionsList.innerHTML = '';
-        q.options.forEach((opt, index) => {
-            const item = optionTemplate.content.cloneNode(true).firstElementChild;
-            item.dataset.index = index;
-            item.id = `option-${currentQuestionIndex}-${index}`;
+            // Shuffle options
+            const optionsWithOriginalIndex = q.options.map((opt, index) => ({
+                ...opt,
+                originalIndex: index
+            }));
+            const shuffledOptions = shuffle(optionsWithOriginalIndex);
 
-            item.querySelector('.option-label').textContent = opt.label;
-            item.querySelector('.option-text').textContent = opt.text;
+            shuffledOptions.forEach((opt) => {
+                const item = optionTemplate.content.cloneNode(true).firstElementChild;
+                item.dataset.index = opt.originalIndex; // Use original index for evaluation
+                item.id = `option-${q.id}-${opt.originalIndex}`;
+                item.querySelector('.option-label').textContent = opt.label;
+                item.querySelector('.option-text').textContent = opt.text;
 
-            // Click handler – toggle selection (NO evaluation!)
-            item.addEventListener('click', () => toggleOption(item));
-            item.addEventListener('keydown', (e) => {
-                if (e.key === ' ' || e.key === 'Enter') {
-                    e.preventDefault();
-                    toggleOption(item);
-                }
+                item.addEventListener('click', () => toggleOption(item));
+                item.addEventListener('keydown', (e) => {
+                    if (e.key === ' ' || e.key === 'Enter') {
+                        e.preventDefault();
+                        toggleOption(item);
+                    }
+                });
+
+                blockOptionsList.appendChild(item);
             });
-            
-            optionsList.appendChild(item);
-        });
 
-        // Hide rationale
-        rationaleBox.classList.add('hidden');
-
-        // Show skip button
-        btnSkip.classList.remove('hidden');
+            questionBatchContainer.appendChild(block);
+        }
 
         // Reset button
-        btnCheck.disabled = true;
-        btnCheck.classList.remove('btn-next');
-        btnCheck.innerHTML = `
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <polyline points="20 6 9 17 4 12"/>
-      </svg>
-      Antwort überprüfen
-    `;
+        btnCheck.disabled = true; // Disabled until an option is selected
+        const isLastBatch = batchEndIndex >= activeQuestions.length;
+        btnCheck.textContent = isLastBatch ? 'Ergebnis anzeigen' : 'Nächste Fragen';
 
-        startQuestionTimer();
         showScreen(screenQuiz);
     }
 
     // ── Toggle Option (Checkbox Behavior) ──────────────────
     function toggleOption(item) {
-        // Block toggling after evaluation
-        if (isEvaluated) return;
-
         const isSelected = item.classList.toggle('selected');
         item.setAttribute('aria-checked', isSelected ? 'true' : 'false');
 
-        // Enable/disable check button based on selection count
-        const selectedCount = optionsList.querySelectorAll('.option-item.selected').length;
-        btnCheck.disabled = selectedCount === 0;
+        // Enable check button if at least one option is selected anywhere in the batch
+        const anySelected = questionBatchContainer.querySelector('.option-item.selected');
+        btnCheck.disabled = !anySelected;
     }
 
-    // ── Build Rationale HTML ──────────────────────────────
-    function buildRationale(q, selectedIndices) {
-        const selectedSet = new Set(selectedIndices);
-        const correctSet = new Set(q.correctAnswers);
-        const isFullyCorrect =
-            selectedSet.size === correctSet.size &&
-            [...correctSet].every((i) => selectedSet.has(i));
+    // ── Evaluate Current Batch ─────────────────────────────
+    function evaluateCurrentBatch() {
+        const batchEndIndex = Math.min(currentQuestionIndex + BATCH_SIZE, activeQuestions.length);
 
-        // Determine title
-        const rationaleTitle = $('#rationale-title');
-        if (isFullyCorrect) {
-            rationaleTitle.textContent = '✓ Richtig!';
-        } else {
-            // Check if partially correct
-            const hasAnyCorrect = selectedIndices.some((i) => correctSet.has(i));
-            const hasAnyWrong = selectedIndices.some((i) => !correctSet.has(i));
-            const missedSome = q.correctAnswers.some((i) => !selectedSet.has(i));
+        for (let i = currentQuestionIndex; i < batchEndIndex; i++) {
+            const q = activeQuestions[i];
+            const questionBlock = questionBatchContainer.querySelector(`.question-block[data-question-id="${q.id}"]`);
+            if (!questionBlock) continue;
 
-            if (hasAnyCorrect && (hasAnyWrong || missedSome)) {
-                rationaleTitle.textContent = '✗ Teilweise richtig';
-            } else {
-                rationaleTitle.textContent = '✗ Leider falsch';
+            const selectedItems = questionBlock.querySelectorAll('.option-item.selected');
+            const selectedIndices = Array.from(selectedItems).map(item => parseInt(item.dataset.index, 10));
+
+            // Only process if an answer was given for this question
+            if (selectedIndices.length > 0) {
+                const selectedSet = new Set(selectedIndices);
+                const correctSet = new Set(q.correctAnswers);
+                const isFullyCorrect =
+                    selectedSet.size === correctSet.size &&
+                    [...correctSet].every((i) => selectedSet.has(i));
+
+                if (isFullyCorrect) {
+                    score++;
+                } else {
+                    wrongScore++;
+                    incorrectAnswers.push({
+                        question: q,
+                        selected: selectedIndices,
+                        timestamp: new Date()
+                    });
+                }
             }
         }
-
-        // Build option-by-option feedback
-        let html = '<div class="rationale-items">';
-
-        q.options.forEach((opt, index) => {
-            const isSelected = selectedSet.has(index);
-            const isCorrect = correctSet.has(index);
-
-            if (isSelected && isCorrect) {
-                html += `<div class="rationale-item rationale-correct">
-                    <span class="rationale-marker correct-marker">✓</span>
-                    <span><strong>${opt.label})</strong> ${opt.text} — <em>Richtig gewählt!</em></span>
-                </div>`;
-            } else if (isSelected && !isCorrect) {
-                html += `<div class="rationale-item rationale-wrong">
-                    <span class="rationale-marker wrong-marker">✗</span>
-                    <span><strong>${opt.label})</strong> ${opt.text} — <em>Diese Antwort ist nicht korrekt.</em></span>
-                </div>`;
-            } else if (!isSelected && isCorrect) {
-                html += `<div class="rationale-item rationale-missed">
-                    <span class="rationale-marker missed-marker">!</span>
-                    <span><strong>${opt.label})</strong> ${opt.text} — <em>Diese Antwort wäre ebenfalls richtig gewesen.</em></span>
-                </div>`;
-            }
-        });
-
-        html += '</div>';
-
-        // Summary line with correct answers
-        if (!isFullyCorrect) {
-            const correctLabels = q.correctAnswers.map((i) => q.options[i].label).join(', ');
-            html += `<div class="rationale-summary">Korrekte Antwort${q.correctAnswers.length > 1 ? 'en' : ''}: <strong>${correctLabels}</strong></div>`;
-        }
-
-        // Show detailed explanation if available
-        if (q.rationale) {
-            html += `<div class="rationale-explanation">
-                <span class="rationale-explanation-label">💡 Erklärung:</span>
-                ${q.rationale}
-            </div>`;
-        }
-
-        return html;
-    }
-
-    // ── Evaluate Answer ────────────────────────────────────
-    function evaluateAnswer() {
-        if (isEvaluated) return;
-        stopQuestionTimer();
-        isEvaluated = true;
-
-        // Hide skip button as a decision has been made
-        btnSkip.classList.add('hidden');
-
-        const totalQuestions = activeQuestions.length;
-        const q = activeQuestions[currentQuestionIndex];
-        const allItems = optionsList.querySelectorAll('.option-item');
-        const selectedIndices = [];
-
-        allItems.forEach((item) => {
-            const idx = parseInt(item.dataset.index, 10);
-            const isSelected = item.classList.contains('selected');
-            const isCorrect = q.correctAnswers.includes(idx);
-
-            item.classList.add('evaluated');
-
-            if (isSelected && isCorrect) {
-                item.classList.add('correct');
-                item.querySelector('.option-result-icon').innerHTML = checkSVG('#22c55e', 20);
-                selectedIndices.push(idx);
-            } else if (isSelected && !isCorrect) {
-                item.classList.add('wrong');
-                item.querySelector('.option-result-icon').innerHTML = crossSVG('#ef4444', 20);
-                selectedIndices.push(idx);
-            } else if (!isSelected && isCorrect) {
-                item.classList.add('missed');
-                item.querySelector('.option-result-icon').innerHTML = checkSVG('#22c55e', 18);
-            } else {
-                item.classList.add('neutral-evaluated');
-            }
-        });
-
-        // Score: only full points if ALL correct answers selected and NO wrong answers selected
-        const selectedSet = new Set(selectedIndices);
-        const correctSet = new Set(q.correctAnswers);
-        const isFullyCorrect =
-            selectedSet.size === correctSet.size &&
-            [...correctSet].every((i) => selectedSet.has(i));
-
-        // Remove the question from the skipped list if it exists there, as it's now answered.
-        const justAnsweredQuestion = activeQuestions[currentQuestionIndex];
-        const indexInSkipped = skippedQuestions.findIndex(q => q.id === justAnsweredQuestion.id);
-        if (indexInSkipped > -1) {
-            skippedQuestions.splice(indexInSkipped, 1);
-        }
-
-        if (isFullyCorrect) {
-            score++;
-        } else {
-            wrongScore++;
-            incorrectAnswers.push({
-                question: q,
-                selected: selectedIndices,
-                timestamp: new Date()
-            });
-        }
-
         updateLiveScore();
-        updateAvgTime();
-
-        // Show rationale
-        rationaleText.innerHTML = buildRationale(q, selectedIndices);
-        rationaleBox.classList.remove('hidden');
-
-        // Transform button to "Nächste Frage" or "Ergebnis anzeigen"
-        const isLast = (currentQuestionIndex >= activeQuestions.length - 1) && (skippedQuestions.length === 0);
-        btnCheck.disabled = false;
-        btnCheck.classList.add('btn-next');
-
-        if (isLast) {
-            btnCheck.innerHTML = `
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-          <polyline points="22 4 12 14.01 9 11.01"/>
-        </svg>
-        Ergebnis anzeigen
-      `;
-        } else {
-            btnCheck.innerHTML = `
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-          <line x1="5" y1="12" x2="19" y2="12"/>
-          <polyline points="12 5 19 12 12 19"/>
-        </svg>
-        Nächste Frage
-      `;
-        }
     }
 
     // ── Show Results ───────────────────────────────────────
     function showResults() {
         stopTimer();
         quizCompletionTime = new Date();
+        
+        // Calculate duration
+        let durationStr = "00:00";
+        if (startTime) {
+            const durationSec = Math.floor((new Date() - startTime) / 1000);
+            durationStr = formatTime(durationSec);
+        }
+        
         const totalQuestions = originalTotalQuestions;
 
         if (btnExportPdf) btnExportPdf.classList.remove('hidden');
@@ -561,6 +385,64 @@
         progressText.textContent = `Ergebnis von ${totalQuestions} Fragen`;
 
         const percent = Math.round((score / totalQuestions) * 100);
+
+        // ── Populate New Stats Grid ──
+        if (resStatCorrect) resStatCorrect.textContent = score;
+        if (resStatWrong) resStatWrong.textContent = wrongScore;
+        if (resStatPercent) resStatPercent.textContent = `${percent}%`;
+        if (resStatTime) resStatTime.textContent = durationStr;
+
+        // ── Generate Category Breakdown ──
+        if (categoryBreakdownContainer && categoryBreakdownList) {
+            categoryBreakdownContainer.classList.remove('hidden');
+            categoryBreakdownList.innerHTML = '';
+            
+            // Calculate stats per category
+            const catStats = {};
+            activeQuestions.forEach(q => {
+                const catName = q.category.replace(/^\d+\s*/, ''); // Clean name
+                if (!catStats[catName]) {
+                    catStats[catName] = { total: 0, correct: 0 };
+                }
+                catStats[catName].total++;
+                catStats[catName].correct++; // Assume correct initially
+            });
+
+            // Adjust for wrong answers
+            incorrectAnswers.forEach(item => {
+                const catName = item.question.category.replace(/^\d+\s*/, '');
+                if (catStats[catName]) {
+                    catStats[catName].correct--;
+                }
+            });
+
+            // Render bars
+            Object.keys(catStats).forEach(cat => {
+                const data = catStats[cat];
+                if (data.total === 0) return;
+                const p = Math.round((data.correct / data.total) * 100);
+                
+                let colorClass = 'low';
+                if (p >= 80) colorClass = 'high';
+                else if (p >= 50) colorClass = 'med';
+
+                const item = document.createElement('div');
+                item.className = 'cat-stat-item';
+                item.innerHTML = `
+                    <div class="cat-stat-header">
+                        <span>${cat}</span>
+                        <span>${data.correct}/${data.total} (${p}%)</span>
+                    </div>
+                    <div class="cat-progress-track">
+                        <div class="cat-progress-fill ${colorClass}" style="width: ${p}%"></div>
+                    </div>
+                `;
+                categoryBreakdownList.appendChild(item);
+            });
+        }
+
+        // Save result to history
+        saveHistoryResult(score, totalQuestions, selectedCategory);
 
         // Display completion time
         if (resultCompletionTime) {
@@ -648,6 +530,12 @@
                 });
                 optionsHtml += '</div>';
 
+                // Rationale (Erklärung) hinzufügen, falls vorhanden
+                let rationaleHtml = '';
+                if (question.rationale) {
+                    rationaleHtml = `<div class="wrong-q-rationale"><strong>Erklärung:</strong> ${question.rationale}</div>`;
+                }
+
                 const formattedTime = timestamp.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
 
                 summaryItem.innerHTML = `
@@ -656,6 +544,7 @@
                         <span class="wrong-q-timestamp">${formattedTime} Uhr</span>
                     </div>
                     ${optionsHtml}
+                    ${rationaleHtml}
                 `;
                 wrongAnswersList.appendChild(summaryItem);
             });
@@ -726,8 +615,6 @@
         score = 0;
         wrongScore = 0;
         incorrectAnswers = [];
-        skippedQuestions = [];
-        isEvaluated = false;
         progressFill.style.width = '0%';
         progressInfo.classList.add('visible');
         if (avgTimeDisplay) {
@@ -735,7 +622,8 @@
         }
         updateLiveScore();
         startTimer();
-        renderQuestion();
+        startTime = new Date();
+        renderQuestionBatch();
     }
 
     // ── Reset Quiz (same category) ─────────────────────────
@@ -748,15 +636,14 @@
         score = 0;
         wrongScore = 0;
         incorrectAnswers = [];
-        skippedQuestions = [];
-        isEvaluated = false;
         progressFill.style.width = '0%';
         if (avgTimeDisplay) {
             avgTimeDisplay.style.display = 'flex';
         }
         updateLiveScore();
         startTimer();
-        renderQuestion();
+        startTime = new Date();
+        renderQuestionBatch();
     }
 
     // ── Retry Incorrect Questions ──────────────────────────
@@ -771,9 +658,7 @@
         currentQuestionIndex = 0;
         score = 0;
         wrongScore = 0;
-        skippedQuestions = [];
         incorrectAnswers = [];
-        isEvaluated = false;
 
         // Reset UI elements and start the quiz
         progressFill.style.width = '0%';
@@ -782,43 +667,8 @@
         }
         updateLiveScore();
         startTimer();
-        renderQuestion();
-    }
-
-    // ── Skip Question Logic ────────────────────────────────
-    function skipQuestion() {
-        if (isEvaluated) return;
-
-        const q = activeQuestions[currentQuestionIndex];
-        
-        // Add to skipped queue if not already there (to handle skipping a skipped question again)
-        if (!skippedQuestions.find(sq => sq.id === q.id)) {
-            skippedQuestions.push(q);
-        }
-
-        // Move to the next logical question
-        moveToNextQuestion();
-    }
-
-    function moveToNextQuestion() {
-        currentQuestionIndex++;
-
-        if (currentQuestionIndex >= activeQuestions.length) {
-            // End of the current pass. Check for remaining skipped questions.
-            if (skippedQuestions.length > 0) {
-                // Start a new round with the remaining skipped questions.
-                activeQuestions = shuffle(skippedQuestions);
-                skippedQuestions = []; // Clear queue for this new pass
-                currentQuestionIndex = 0;
-                renderQuestion();
-            } else {
-                // No skipped questions left, we are done.
-                showResults();
-            }
-        } else {
-            // There are more questions in the current pass.
-            renderQuestion();
-        }
+        startTime = new Date();
+        renderQuestionBatch();
     }
 
     // ── Export Results to PDF ──────────────────────────────
@@ -872,7 +722,71 @@
         }
         y += 15;
 
-        // --- 3. Incorrect Answers Section ---
+        // --- 3. Detaillierte Statistiken ---
+        checkPageBreak(35);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(14);
+        doc.text("Statistik im Überblick", margin, y);
+        y += 8;
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(11);
+
+        const col1_x = margin;
+        const col2_x = margin + (contentWidth / 2);
+        let durationStr = "00:00";
+        if (startTime) {
+            const durationSec = Math.floor((new Date() - startTime) / 1000);
+            durationStr = formatTime(durationSec);
+        }
+
+        doc.text(`✅ Richtig: ${score}`, col1_x, y);
+        doc.text(`❌ Falsch: ${wrongScore}`, col2_x, y);
+        y += 7;
+
+        doc.text(`🎯 Quote: ${percent}%`, col1_x, y);
+        doc.text(`⏱️ Zeit: ${durationStr}`, col2_x, y);
+        y += 15;
+
+        // --- 4. Analyse nach Themengebieten ---
+        checkPageBreak(15);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(14);
+        doc.text("Analyse nach Themengebieten", margin, y);
+        y += 8;
+
+        // Calculate stats per category (re-calculation for self-contained export)
+        const catStats = {};
+        activeQuestions.forEach(q => {
+            const catName = q.category.replace(/^\d+\s*/, ''); // Clean name
+            if (!catStats[catName]) {
+                catStats[catName] = { total: 0, correct: 0 };
+            }
+            catStats[catName].total++;
+            catStats[catName].correct++; // Assume correct initially
+        });
+        incorrectAnswers.forEach(item => {
+            const catName = item.question.category.replace(/^\d+\s*/, '');
+            if (catStats[catName]) {
+                catStats[catName].correct--;
+            }
+        });
+
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        const sortedCategories = Object.keys(catStats).sort();
+        sortedCategories.forEach(cat => {
+            const data = catStats[cat];
+            if (data.total === 0) return;
+            const p = Math.round((data.correct / data.total) * 100);
+            const statLine = `${cat}: ${data.correct} von ${data.total} (${p}%)`;
+            checkPageBreak(lineHeight + 2);
+            doc.text(statLine, margin, y);
+            y += lineHeight + 1;
+        });
+        y += 10;
+
+        // --- 5. Incorrect Answers Section ---
         if (incorrectAnswers.length > 0) {
             checkPageBreak(10);
             doc.setFont("helvetica", "bold");
@@ -921,7 +835,20 @@
                 doc.setFontSize(9);
                 doc.setTextColor(40, 40, 40);
                 doc.text(allOptionsLines, margin, y);
-                y += allOptionsLines.length * lineHeight + 8;
+                y += allOptionsLines.length * lineHeight + 4;
+
+                // Add rationale to PDF
+                if (question.rationale) {
+                    const rationaleLines = doc.splitTextToSize(`Erklärung: ${question.rationale}`, contentWidth);
+                    checkPageBreak(rationaleLines.length * lineHeight + 5);
+                    
+                    doc.setFont("helvetica", "italic");
+                    doc.setTextColor(80, 80, 80); // Dunkelgrau für Erklärung
+                    doc.text(rationaleLines, margin, y);
+                    y += rationaleLines.length * lineHeight + 8;
+                } else {
+                    y += 5;
+                }
             });
         } else {
             checkPageBreak(10);
@@ -931,9 +858,70 @@
             doc.text("Perfekt! Du hast alle Fragen richtig beantwortet.", margin, y);
         }
 
-        // --- 4. Save the PDF ---
+        // --- 6. Save the PDF ---
         doc.setTextColor(0, 0, 0);
         doc.save('KI-Quiz-Ergebnisse.pdf');
+    }
+
+    // ── History Functions ──────────────────────────────────
+    function saveHistoryResult(score, total, category) {
+        const history = JSON.parse(localStorage.getItem('quiz-history') || '[]');
+        const newEntry = {
+            date: new Date().toISOString(),
+            score: score,
+            total: total,
+            category: category // null means "All"
+        };
+        
+        // Add to beginning
+        history.unshift(newEntry);
+        
+        // Keep only last 5 entries
+        if (history.length > 5) {
+            history.pop();
+        }
+        
+        localStorage.setItem('quiz-history', JSON.stringify(history));
+    }
+
+    function renderHistory() {
+        if (!historySection || !historyList) return;
+        
+        const history = JSON.parse(localStorage.getItem('quiz-history') || '[]');
+        
+        if (history.length === 0) {
+            historySection.classList.add('hidden');
+            return;
+        }
+        
+        historySection.classList.remove('hidden');
+        historyList.innerHTML = '';
+        
+        history.forEach(item => {
+            const dateObj = new Date(item.date);
+            const dateStr = dateObj.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+            const percent = Math.round((item.score / item.total) * 100);
+            
+            let badgeClass = 'low';
+            if (percent >= 80) badgeClass = 'high';
+            else if (percent >= 50) badgeClass = 'med';
+            
+            const catName = item.category ? item.category.replace(/^\d+\s*/, '') : 'Alle Fragen';
+
+            const el = document.createElement('div');
+            el.className = 'history-item';
+            el.innerHTML = `
+                <div class="history-info">
+                    <span class="history-cat">${catName}</span>
+                    <span class="history-date">${dateStr}</span>
+                </div>
+                <div class="history-score">
+                    <span class="history-val">${item.score}/${item.total}</span>
+                    <span class="history-badge ${badgeClass}">${percent}%</span>
+                </div>
+            `;
+            historyList.appendChild(el);
+        });
     }
 
     // ── Go back to home ────────────────────────────────────
@@ -952,28 +940,28 @@
         if (btnExportPdf) {
             btnExportPdf.classList.add('hidden');
         }
-        if (btnSkip) {
-            btnSkip.classList.add('hidden');
-        }
         if (resultCompletionTime) {
             resultCompletionTime.textContent = '';
         }
+        renderHistory(); // Refresh history display
         showScreen(screenStart);
     }
 
     // ── Button Click Handlers ──────────────────────────────
     btnCheck.addEventListener('click', () => {
-        if (!isEvaluated) {
-            evaluateAnswer();
+        evaluateCurrentBatch();
+        currentQuestionIndex += BATCH_SIZE;
+
+        if (currentQuestionIndex < activeQuestions.length) {
+            renderQuestionBatch();
         } else {
-            moveToNextQuestion();
+            showResults();
         }
     });
 
     btnStart.addEventListener('click', () => startQuiz());
     btnRestart.addEventListener('click', () => restartQuiz());
     btnRetryIncorrect.addEventListener('click', () => retryIncorrect());
-    btnSkip.addEventListener('click', skipQuestion);
     btnExportPdf.addEventListener('click', () => exportResultsToPdf());
     btnBackHome.addEventListener('click', () => goHome());
 
@@ -983,6 +971,15 @@
         }
     });
 
+    if (btnClearHistory) {
+        btnClearHistory.addEventListener('click', () => {
+            if(confirm('Möchtest du den Verlauf wirklich löschen?')) {
+                localStorage.removeItem('quiz-history');
+                renderHistory();
+            }
+        });
+    }
+
     btnTimeupResult.addEventListener('click', () => {
         modalTimeup.classList.add('hidden');
         showResults();
@@ -990,5 +987,5 @@
 
     // ── Initialize ─────────────────────────────────────────
     buildCategoryChips();
-
+    renderHistory();
 })();
