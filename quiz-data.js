@@ -101,7 +101,8 @@ const QUIZ_DATA = [
     "correctAnswers": [
       0
     ],
-    "category": "1 genAI & LLMs"
+    "category": "1 genAI & LLMs",
+    "rationale": "LLM steht für Large Language Model (Großes Sprachmodell). Es handelt sich um KI-Modelle, die auf riesigen Textmengen trainiert wurden, um Sprache zu verstehen und zu generieren."
   },
   {
     "id": 5,

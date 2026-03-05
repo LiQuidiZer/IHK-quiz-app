@@ -685,6 +685,17 @@ body {
   letter-spacing: -0.01em;
 }
 
+/* --- Question Block (for batch view) --- */
+.question-block {
+  padding-bottom: 24px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.question-block:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+}
+
 /* --- Option Items (Checkbox-styled) --- */
 .options-list {
   display: flex;
@@ -1330,10 +1341,6 @@ body {
   border-color: var(--wrong-border);
 }
 .wrong-q-option.wrong .option-line-indicator { color: var(--wrong); }
-}
-
-/* ============================================================
-   Responsive
    ============================================================ */
 @media (max-width: 680px) {
   .glass-card {
