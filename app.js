@@ -917,11 +917,13 @@
     // ── History Functions ──────────────────────────────────
     function saveHistoryResult(score, total, category) {
         const history = JSON.parse(localStorage.getItem('quiz-history') || '[]');
+        const wrongIds = incorrectAnswers.map(item => item.question.id);
         const newEntry = {
             date: new Date().toISOString(),
             score: score,
             total: total,
-            category: category // null means "All"
+            category: category, // null means "All"
+            wrongIds // array of ids for questions answered incorrectly
         };
         
         // Add to beginning
@@ -948,7 +950,7 @@
         historySection.classList.remove('hidden');
         historyList.innerHTML = '';
         
-        history.forEach(item => {
+        history.forEach((item, idx) => {
             const dateObj = new Date(item.date);
             const dateStr = dateObj.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
             const percent = Math.round((item.score / item.total) * 100);
@@ -961,6 +963,7 @@
 
             const el = document.createElement('div');
             el.className = 'history-item';
+            el.dataset.historyIndex = idx;
             el.innerHTML = `
                 <div class="history-info">
                     <span class="history-cat">${catName}</span>
@@ -971,8 +974,60 @@
                     <span class="history-badge ${badgeClass}">${percent}%</span>
                 </div>
             `;
+            // make history item clickable for review/retry
+            el.style.cursor = 'pointer';
+            el.addEventListener('click', () => handleHistoryClick(item));
             historyList.appendChild(el);
         });
+    }
+
+    // --------------------------------------------------
+    // History review / retry helper
+    // --------------------------------------------------
+    function handleHistoryClick(entry) {
+        if (!entry || !entry.wrongIds) {
+            alert('Für diesen Eintrag sind keine Details verfügbar, da er vor einer älteren Version gespeichert wurde.');
+            return;
+        }
+        if (entry.wrongIds.length === 0) {
+            alert('Bei diesem Eintrag gibt es keine falschen Antworten zum Wiederholen.');
+            return;
+        }
+
+        // ask user if they want to retry those specific questions
+        if (!confirm(`Dieses Ergebnis enthält ${entry.wrongIds.length} falsche Frage${entry.wrongIds.length > 1 ? 'n' : ''}.\nMöchtest du das Quiz mit genau diesen Fragen neu starten?`)) {
+            return;
+        }
+
+        // preserve category filter if available (will affect stats/chips)
+        selectedCategory = entry.category || null;
+        updateStats();
+
+        // Collect the corresponding question objects from the global data
+        const questionsToRetry = selectedCategory
+            ? QUIZ_DATA.filter(q => q.category === selectedCategory && entry.wrongIds.includes(q.id))
+            : QUIZ_DATA.filter(q => entry.wrongIds.includes(q.id));
+        if (questionsToRetry.length === 0) {
+            alert('Die gespeicherten Fragen konnten nicht gefunden werden.');
+            return;
+        }
+
+        // Reset quiz state and start with only the wrong questions
+        activeQuestions = shuffle(questionsToRetry);
+        originalTotalQuestions = activeQuestions.length;
+        currentQuestionIndex = 0;
+        score = 0;
+        wrongScore = 0;
+        incorrectAnswers = [];
+
+        progressFill.style.width = '0%';
+        if (avgTimeDisplay) {
+            avgTimeDisplay.style.display = 'flex';
+        }
+        updateLiveScore();
+        startTimer();
+        startTime = new Date();
+        renderQuestionBatch();
     }
 
     // ── Go back to home ────────────────────────────────────
