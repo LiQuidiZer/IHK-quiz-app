@@ -570,25 +570,6 @@
                 `;
                 wrongAnswersList.appendChild(summaryItem);
             });
-
-                // Rationale (Erklärung) hinzufügen, falls vorhanden
-                let rationaleHtml = '';
-                if (question.rationale) {
-                    rationaleHtml = `<div class="wrong-q-rationale"><strong>Erklärung:</strong> ${question.rationale}</div>`;
-                }
-
-                const formattedTime = timestamp.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
-
-                summaryItem.innerHTML = `
-                    <div class="wrong-q-header">
-                        <p class="wrong-q-text">${question.question}</p>
-                        <span class="wrong-q-timestamp">${formattedTime} Uhr</span>
-                    </div>
-                    ${optionsHtml}
-                    ${rationaleHtml}
-                `;
-                wrongAnswersList.appendChild(summaryItem);
-            });
         } else {
             wrongAnswersSummary.classList.add('hidden');
             btnRetryIncorrect.classList.add('hidden');
