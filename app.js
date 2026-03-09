@@ -15,6 +15,14 @@
     let startTime = null;
     const BATCH_SIZE = 5;
 
+    // quiz identifier and retry flag used for history tracking
+    let currentQuizId = null;
+    let currentIsRetry = false;
+
+    function generateQuizId() {
+        return `${Date.now().toString(36)}-${Math.random().toString(36).substr(2,5)}`;
+    }
+
     // --------------------------------------------------
     // application version, shown in header
     const APP_VERSION = '1.3.1';
@@ -473,6 +481,12 @@
             resultCompletionTime.textContent = `Abgeschlossen am ${datePart} um ${timePart} Uhr`;
         }
 
+        // show quiz identifier
+        const resultQuizIdEl = $('#result-quiz-id');
+        if (resultQuizIdEl && currentQuizId) {
+            resultQuizIdEl.textContent = `ID: ${currentQuizId}${currentIsRetry ? ' (Wiederholung)' : ''}`;
+        }
+
         // Icon & theme
         let iconHTML, titleText, subtitleText, messageText, iconClass;
 
@@ -642,6 +656,10 @@
 
     // ── Start Quiz ─────────────────────────────────────────
     function startQuiz() {
+        // new attempt => fresh id, not a retry
+        currentQuizId = generateQuizId();
+        currentIsRetry = false;
+
         const filtered = getFilteredQuestions();
         const questionLimit = parseInt(inputQuestions.value, 10) || 40;
         activeQuestions = shuffle(filtered).slice(0, questionLimit);
@@ -663,6 +681,10 @@
 
     // ── Reset Quiz (same category) ─────────────────────────
     function restartQuiz() {
+        // also count as new attempt
+        currentQuizId = generateQuizId();
+        currentIsRetry = false;
+
         const filtered = getFilteredQuestions();
         const questionLimit = parseInt(inputQuestions.value, 10) || 40;
         activeQuestions = shuffle(filtered).slice(0, questionLimit);
@@ -684,6 +706,9 @@
     // ── Retry Incorrect Questions ──────────────────────────
     function retryIncorrect() {
         if (incorrectAnswers.length === 0) return;
+
+        // keep the same quiz id, mark as retry
+        currentIsRetry = true;
 
         // Set active questions to only the ones that were incorrect
         activeQuestions = shuffle(incorrectAnswers.map(item => item.question));
@@ -918,12 +943,18 @@
     function saveHistoryResult(score, total, category) {
         const history = JSON.parse(localStorage.getItem('quiz-history') || '[]');
         const wrongIds = incorrectAnswers.map(item => item.question.id);
+        // ensure there's a quiz id available
+        if (!currentQuizId) {
+            currentQuizId = generateQuizId();
+        }
         const newEntry = {
             date: new Date().toISOString(),
+            quizId: currentQuizId,
             score: score,
             total: total,
             category: category, // null means "All"
-            wrongIds // array of ids for questions answered incorrectly
+            wrongIds, // array of ids for questions answered incorrectly
+            retry: !!currentIsRetry
         };
         
         // Add to beginning
@@ -964,10 +995,14 @@
             const el = document.createElement('div');
             el.className = 'history-item';
             el.dataset.historyIndex = idx;
+            // id may be missing for entries saved before this feature
+            const idText = item.quizId ? item.quizId : 'unbekannt';
+            const retryText = item.retry ? ' (Wiederholung)' : '';
             el.innerHTML = `
                 <div class="history-info">
                     <span class="history-cat">${catName}</span>
                     <span class="history-date">${dateStr}</span>
+                    <span class="history-id">${idText}${retryText}</span>
                 </div>
                 <div class="history-score">
                     <span class="history-val">${item.score}/${item.total}</span>
@@ -1002,6 +1037,10 @@
         // preserve category filter if available (will affect stats/chips)
         selectedCategory = entry.category || null;
         updateStats();
+
+        // keep same id and mark as retry
+        currentQuizId = entry.quizId || generateQuizId();
+        currentIsRetry = true;
 
         // Collect the corresponding question objects from the global data
         const questionsToRetry = selectedCategory

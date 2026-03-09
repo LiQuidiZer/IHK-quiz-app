@@ -1088,6 +1088,12 @@ body {
   margin-top: -28px; /* Pull it closer to the subtitle */
   font-style: italic;
 }
+.result-quiz-id {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-bottom: 20px;
+  font-style: italic;
+}
 
 /* Score Ring */
 .result-score-ring {
