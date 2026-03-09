@@ -762,7 +762,14 @@
         // --- 1. PDF Header ---
         doc.setFont("helvetica", "bold");
         doc.setFontSize(20);
+        // draw a colored background band for the title
+        const titleHeight = 12;
+        doc.setFillColor(99, 102, 241); // indigo
+        doc.rect(margin, y - 8, contentWidth, titleHeight, 'F');
+        doc.setTextColor(255, 255, 255);
         doc.text("Ergebnis deines KI-Quiz", doc.internal.pageSize.getWidth() / 2, y, { align: 'center' });
+        // reset color
+        doc.setTextColor(0, 0, 0);
         y += 15;
 
         // --- 2. Score Summary ---
@@ -800,12 +807,19 @@
             durationStr = formatTime(durationSec);
         }
 
+        // coloured score summary
+        doc.setTextColor(34, 197, 94); // green
         doc.text(`✅ Richtig: ${score}`, col1_x, y);
+        doc.setTextColor(239, 68, 68); // red
         doc.text(`❌ Falsch: ${wrongScore}`, col2_x, y);
         y += 7;
 
+        doc.setTextColor(59, 130, 246); // blue
         doc.text(`🎯 Quote: ${percent}%`, col1_x, y);
+        doc.setTextColor(234, 179, 8); // yellow
         doc.text(`⏱️ Zeit: ${durationStr}`, col2_x, y);
+        // reset color
+        doc.setTextColor(0, 0, 0);
         y += 15;
 
         // --- 4. Analyse nach Themengebieten ---
@@ -840,9 +854,22 @@
             if (data.total === 0) return;
             const p = Math.round((data.correct / data.total) * 100);
             const statLine = `${cat}: ${data.correct} von ${data.total} (${p}%)`;
-            checkPageBreak(lineHeight + 2);
+            checkPageBreak(lineHeight + 8);
+
+            // draw color bar
+            let color;
+            if (p >= 80) color = [34, 197, 94]; // green
+            else if (p >= 50) color = [245, 158, 11]; // yellow
+            else color = [239, 68, 68]; // red
+            const barHeight = 4;
+            const barWidth = (contentWidth) * (p / 100);
+            doc.setFillColor(...color);
+            doc.rect(margin, y, barWidth, barHeight, 'F');
+            y += barHeight + 2;
+
+            doc.setTextColor(0, 0, 0);
             doc.text(statLine, margin, y);
-            y += lineHeight + 1;
+            y += lineHeight + 4;
         });
         y += 10;
 
@@ -851,7 +878,9 @@
             checkPageBreak(10);
             doc.setFont("helvetica", "bold");
             doc.setFontSize(16);
+            doc.setTextColor(59, 130, 246); // blue heading
             doc.text("Zusammenfassung der Fehler", margin, y);
+            doc.setTextColor(0, 0, 0);
             y += 10;
 
             incorrectAnswers.forEach((item, index) => {
@@ -862,6 +891,11 @@
                 // --- Prepare text blocks ---
                 const formattedTime = timestamp.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
                 const questionTextLines = doc.splitTextToSize(`${index + 1}. ${question.question}`, contentWidth);
+                
+                // draw light background for question block
+                const blockHeight = questionTextLines.length * lineHeight + 10;
+                doc.setFillColor(245, 245, 245);
+                doc.rect(margin - 2, y - 2, contentWidth + 4, blockHeight, 'F');
                 
                 // build a summary line for correct answer(s)
                 const correctTexts = question.correctAnswers
