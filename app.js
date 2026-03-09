@@ -57,6 +57,7 @@
     const liveWrong = $('#live-wrong');
     const liveUnanswered = $('#live-unanswered');
     const btnQuizBack = $('#btn-quiz-back');
+    const btnResultBack = $('#btn-result-back');
 
     // Result screen
     const resultIconWrapper = $('#result-icon-wrapper');
@@ -1389,6 +1390,13 @@
             goHome();
         }
     });
+    if (btnResultBack) {
+        btnResultBack.addEventListener('click', () => {
+            if (confirm('Möchtest du das Ergebnis verlassen und zum Hauptmenü zurückkehren?')) {
+                goHome();
+            }
+        });
+    }
 
     if (btnClearHistory) {
         btnClearHistory.addEventListener('click', () => {
